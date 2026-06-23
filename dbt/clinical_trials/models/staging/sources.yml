@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: silver
+    catalog: clinical_trials
+    schema: silver
+    tables:
+      - name: silver_studies
+      - name: silver_calculated_values
+      - name: silver_conditions
+      - name: silver_sponsors

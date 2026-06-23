@@ -1,0 +1,33 @@
+version: 2
+
+models:
+  - name: stg_studies
+    description: "Cleaned and typed studies from the silver layer"
+    columns:
+      - name: nct_id
+        description: "Unique trial identifier"
+        tests:
+          - unique
+          - not_null
+      - name: overall_status
+        tests:
+          - not_null
+      - name: study_type
+        tests:
+          - accepted_values:
+             arguments:
+              values: ['INTERVENTIONAL', 'OBSERVATIONAL', 'EXPANDED_ACCESS']
+
+  - name: stg_calculated_values
+    description: "Cleaned calculated metrics from the silver layer"
+    columns:
+      - name: nct_id
+        description: "Unique trial identifier"
+        tests:
+          - unique
+          - not_null
+      - name: minimum_age_num
+        tests:
+          - not_null
+      - name: maximum_age_num
+        description: "Maximum participant age in years. Null values indicate the original AACT value was an unrealistic outlier (>100 years, likely a unit conversion error) and was deliberately nulled rather than guessed."

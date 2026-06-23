@@ -1,0 +1,18 @@
+version: 2
+
+models:
+  - name: gold_trial_features
+    description: "ML-ready feature table for trial duration prediction. Filtered to completed trials with non-null duration."
+    columns:
+      - name: nct_id
+        description: "Unique trial identifier"
+        tests:
+          - unique
+          - not_null
+      - name: actual_duration
+        description: "Trial duration in months - regression target variable"
+        tests:
+          - not_null
+      - name: number_of_facilities
+        tests:
+          - not_null

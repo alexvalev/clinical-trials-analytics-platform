@@ -1,0 +1,30 @@
+version: 2
+
+models:
+  - name: fact_trials
+    description: "Core fact table joining studies, calculated values, sponsors and conditions"
+    columns:
+      - name: nct_id
+        description: "Unique trial identifier"
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_sponsors
+    description: "Lead sponsor information per trial"
+    columns:
+      - name: nct_id
+        tests:
+          - not_null
+      - name: agency_class
+        tests:
+          - accepted_values:
+              values: ['INDUSTRY', 'NIH', 'OTHER', 'OTHER_GOV', 'FED', 'NETWORK', 'INDIV', 'UNKNOWN', 'AMBIG']
+
+  - name: dim_conditions
+    description: "Aggregated conditions per trial"
+    columns:
+      - name: nct_id
+        tests:
+          - unique
+          - not_null

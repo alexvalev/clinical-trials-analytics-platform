@@ -16,11 +16,8 @@ clean-targets:
 models:
   clinical_trials:
     staging:
-      +schema: gold
       +materialized: view
     marts:
-      +schema: gold
       +materialized: table
     features:
-      +schema: gold
       +materialized: table
