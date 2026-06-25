@@ -28,9 +28,26 @@ AACT Raw Files (pipe-delimited .txt)
     Spark ML + MLflow (duration prediction)
             ↓
     Predictions Delta Table
+            ↓
+    Apache Airflow (pipeline orchestration)
 ```
  
 *Architecture diagram coming soon.*
+
+A Note on Azure
+
+The original plan was to use Azure Data Lake Storage (ADLS Gen2) as the raw ingestion
+layer, with Databricks reading directly from it. During implementation, this hit a real
+constraint: Databricks Free Edition's serverless compute does not support the
+cluster-level Hadoop/JVM configuration required to authenticate to external cloud storage
+(ADLS), regardless of how credentials are supplied (Spark configs, secrets, or otherwise).
+
+Rather than working around this with unsupported low-level APIs, the architecture was
+adapted to use Databricks Volumes as the raw storage layer instead — which is the
+storage mechanism Free Edition is designed to support natively. Azure remains part of
+the project's orchestration story via Airflow (see below). This pivot is documented here
+deliberately: adapting an architecture to a platform's real constraints, rather than
+fighting them, is itself part of good data engineering practice.
  
 ---
  
@@ -134,7 +151,62 @@ Only trials with a non-null `actual_duration` are used for model training (~360,
  
 ## Machine Learning Results
  
-*To be updated after model training.*
+Two regression models were trained to predict clinical trial duration (in months),
+tracked with MLflow: **Linear Regression** and **Gradient Boosted Trees (GBT)**.
+ 
+Both models were trained on a 70/15/15 train/validation/holdout split (235,325 /
+50,380 / 50,275 rows respectively, from a filtered ML-ready dataset of 335,980 trials).
+Hyperparameters were selected via manual grid search against the validation set, after
+which each model was retrained on the combined train+validation data (282,753 rows)
+before final evaluation on the untouched holdout set.
+ 
+| Model | Holdout RMSE (months) | Holdout MAE (months) | Holdout R² |
+|---|---|---|---|
+| Linear Regression | 18.56 | 14.32 | 0.196 |
+| **Gradient Boosted Trees** | **17.35** | **13.04** | **0.297** |
+ 
+### Final Model Selection
+ 
+GBT outperformed Linear Regression on every metric, on both the validation and holdout
+sets, with no meaningful gap between validation and holdout performance for either
+model — indicating neither model overfit during hyperparameter selection.
+ 
+The R² of ~0.30 for GBT means the model explains roughly 30% of the variance in trial
+duration. This is a modest but meaningful result: clinical trial duration is influenced
+by many real-world factors not captured in registration-time metadata (e.g., actual
+recruitment difficulty, unforeseen protocol amendments, site-level operational issues).
+The model captures structural signal (phase, sponsor type, facility count, eligibility
+criteria) without claiming to fully predict an inherently uncertain process.
+ 
+The final production model is the **GBT Regressor** (`maxDepth=8`, `maxIter=50`).
+ 
+### Leakage Investigation: Enrollment Type
+ 
+As discussed in the Feature Engineering section, `enrollment` carries a documented
+leakage caveat when `enrollment_type = ACTUAL` (final enrollment is typically only
+confirmed at or near trial completion). To investigate this empirically, holdout
+performance was broken out by `enrollment_type`:
+ 
+| Enrollment Type | n (holdout) | RMSE | MAE | R² |
+|---|---|---|---|---|
+| ACTUAL | 47,447 | 17.29 | 12.99 | 0.299 |
+| ESTIMATED | 2,088 | 18.69 | 14.15 | 0.262 |
+| UNKNOWN | 224 | 17.57 | 13.14 | 0.140 |
+ 
+ACTUAL rows showed modestly better performance than ESTIMATED rows (~8% lower RMSE).
+This is consistent with either a mild leakage effect, or simply the ~22x larger training
+sample available for ACTUAL rows (319k vs 14k in the full dataset) — and likely some
+combination of both. The gap is too small relative to the sample size imbalance to
+confidently attribute it to leakage alone. This result is reported transparently rather
+than treated as confirmation of either explanation. The UNKNOWN group's R² is not
+meaningful given its very small holdout sample (n=224).
+ 
+### Model Comparison Note
+ 
+The results showed consistent validation-to-holdout performance for both models — GBT
+simply outperformed Linear Regression throughout, reflecting the underlying non-linear and
+categorical-interaction structure of trial duration drivers that a linear model structurally
+cannot capture.
  
 ---
  
@@ -184,31 +256,46 @@ Only trials with a non-null `actual_duration` are used for model training (~360,
  
 ## Future Improvements
  
-- Connect raw file ingestion directly from Azure Data Lake Storage once cluster-level authentication is supported
+- Add an Airflow DAG to orchestrate the full pipeline end-to-end (Bronze → Silver → dbt →
+  ML training) on a schedule
+- Revisit Azure's role now that raw storage lives in Databricks Volumes — e.g., using
+  Azure Blob Storage purely as a trigger source for Airflow, rather than a Databricks-read
+  raw layer
+- Add a model signature when logging to MLflow (required for Unity Catalog Model
+  Registry / serving endpoints)
 - Add Great Expectations data quality checks in the Silver layer
-- Extend the model to predict trial success/failure as a classification task
+- Try isolating the enrollment-type leakage effect from the sample-size confound via a
+  downsampled comparison (equal-sized ACTUAL vs ESTIMATED subsets)
+- Extend the model to predict trial success/withdrawal/termination as a classification task
 - Build a Databricks dashboard for trial trend visualization
+
 ---
  
 ## Repository Structure
  
-```
 clinical-trials-analytics-platform/
 ├── notebooks/
 │   ├── 00_exploration/
+│   │   └── 00_data_exploration.ipynb
 │   ├── 01_bronze/
+│   │   └── 01_bronze_ingestion.ipynb
 │   ├── 02_silver/
-│   ├── 03_gold/
+│   │   └── 02_silver_transformation.ipynb
 │   └── 04_ml/
+│       └── 04_ml_prediction.ipynb
 ├── dbt/
 │   └── clinical_trials/
+│       ├── dbt_project.yml
 │       └── models/
-│           ├── staging/
-│           ├── marts/
-│           └── features/
+│           ├── staging/      (stg_studies, stg_calculated_values)
+│           ├── marts/        (dim_sponsors, dim_conditions, fact_trials)
+│           └── features/     (gold_trial_features)
 ├── airflow/
 │   └── dags/
 ├── images/
 ├── docs/
 └── README.md
-```
+
+**Note on numbering:** The Gold layer is implemented entirely in dbt rather than as a
+notebook — there is no `03_gold/` notebook folder. Notebook folders are numbered by
+pipeline stage (Bronze → Silver → ML), with Gold modeling living in `dbt/` instead.
