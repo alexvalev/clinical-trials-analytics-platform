@@ -272,7 +272,8 @@ cannot capture.
 ---
  
 ## Repository Structure
- 
+
+```
 clinical-trials-analytics-platform/
 ├── notebooks/
 │   ├── 00_exploration/
@@ -295,6 +296,7 @@ clinical-trials-analytics-platform/
 ├── images/
 ├── docs/
 └── README.md
+```
 
 **Note on numbering:** The Gold layer is implemented entirely in dbt rather than as a
 notebook — there is no `03_gold/` notebook folder. Notebook folders are numbered by
