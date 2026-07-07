@@ -29,25 +29,8 @@ AACT Raw Files (pipe-delimited .txt)
             ↓
     Predictions Delta Table
             ↓
-    Apache Airflow (pipeline orchestration)
+    Apache Airflow (orchestrates all of the above end-to-end)
 ```
- 
-*Architecture diagram coming soon.*
-
-A Note on Azure
-
-The original plan was to use Azure Data Lake Storage (ADLS Gen2) as the raw ingestion
-layer, with Databricks reading directly from it. During implementation, this hit a real
-constraint: Databricks Free Edition's serverless compute does not support the
-cluster-level Hadoop/JVM configuration required to authenticate to external cloud storage
-(ADLS), regardless of how credentials are supplied (Spark configs, secrets, or otherwise).
-
-Rather than working around this with unsupported low-level APIs, the architecture was
-adapted to use Databricks Volumes as the raw storage layer instead — which is the
-storage mechanism Free Edition is designed to support natively. Azure remains part of
-the project's orchestration story via Airflow (see below). This pivot is documented here
-deliberately: adapting an architecture to a platform's real constraints, rather than
-fighting them, is itself part of good data engineering practice.
  
 ---
  
@@ -56,7 +39,7 @@ fighting them, is itself part of good data engineering practice.
 | Layer | Tool |
 |---|---|
 | Raw storage | Databricks Volumes |
-| Cloud platform | Microsoft Azure |
+| Cloud platform | Databricks |
 | Orchestration | Apache Airflow |
 | Processing | Databricks (PySpark) |
 | Storage format | Delta Lake |
@@ -209,14 +192,61 @@ categorical-interaction structure of trial duration drivers that a linear model 
 cannot capture.
  
 ---
- 
+
+## Pipeline Orchestration (Airflow)
+
+The full pipeline — Bronze ingestion, Silver transformation, dbt run, dbt test, and ML
+training — is orchestrated end-to-end with Apache Airflow, running locally via WSL2.
+
+```
+bronze_ingestion → silver_transformation → dbt_run → dbt_test → ml_training
+```
+
+Each Databricks notebook task is submitted via the Databricks Jobs API using Airflow's
+`DatabricksSubmitRunOperator`, running on serverless compute. The two dbt tasks run as
+local `BashOperator` shell commands against a dedicated Python environment.
+
+![Airflow DAG](images/airflow-dag.png)
+
+### Why WSL2
+
+Apache Airflow requires POSIX-compliant operating systems and does not run natively on
+Windows (it depends on the `fcntl` module, which is Linux/macOS-only). Airflow runs
+inside WSL2 (Windows Subsystem for Linux) with Ubuntu 24.04, while the project files
+themselves remain on the Windows filesystem and are accessed from WSL2 via `/mnt/c/`.
+
+### Why two separate Python environments
+
+dbt and Airflow have incompatible dependency requirements (conflicting versions of
+`click`, `protobuf`, and `sqlparse` in particular). Installing both into a single virtual
+environment caused cascading dependency conflicts serious enough to break Airflow's CLI
+entirely. The fix was to give each tool its own isolated virtual environment inside
+WSL2 (`airflow-venv` and `dbt-venv`), with the DAG's `BashOperator` tasks explicitly
+activating the dbt environment before running `dbt` commands. This mirrors a common
+real-world pattern: tools with different dependency footprints are kept in separate
+environments rather than forced to coexist.
+
+### Why `DatabricksSubmitRunOperator` instead of `DatabricksNotebookOperator`
+
+The more modern `DatabricksNotebookOperator` requires either an `existing_cluster_id` or
+a `new_cluster` specification — it does not currently support serverless compute
+(this is a [known, open limitation](https://github.com/apache/airflow/issues/45138) in
+the Airflow Databricks provider as of this writing). Since Databricks Free Edition is
+serverless-only, this operator could not be used here.
+
+The older `DatabricksSubmitRunOperator` does support serverless, but only when the job
+is submitted using the newer multi-task format (a `tasks` array with a `task_key`),
+rather than the legacy single `notebook_task` parameter — the Databricks Jobs API
+returns an explicit error directing you to this format when no cluster is specified.
+
+---
+
 ## How to Run
  
 ### Prerequisites
 - Databricks Free Edition account
 - dbt Core installed locally
 - Apache Airflow installed locally
-- Azure account with ADLS Gen2 storage
 ### Setup
  
 1. Clone the repository:
@@ -251,24 +281,6 @@ cannot capture.
    cd airflow
    airflow dags trigger clinical_trials_pipeline
    ```
- 
----
- 
-## Future Improvements
- 
-- Add an Airflow DAG to orchestrate the full pipeline end-to-end (Bronze → Silver → dbt →
-  ML training) on a schedule
-- Revisit Azure's role now that raw storage lives in Databricks Volumes — e.g., using
-  Azure Blob Storage purely as a trigger source for Airflow, rather than a Databricks-read
-  raw layer
-- Add a model signature when logging to MLflow (required for Unity Catalog Model
-  Registry / serving endpoints)
-- Add Great Expectations data quality checks in the Silver layer
-- Try isolating the enrollment-type leakage effect from the sample-size confound via a
-  downsampled comparison (equal-sized ACTUAL vs ESTIMATED subsets)
-- Extend the model to predict trial success/withdrawal/termination as a classification task
-- Build a Databricks dashboard for trial trend visualization
-
 ---
  
 ## Repository Structure
